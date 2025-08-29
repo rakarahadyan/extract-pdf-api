@@ -24,8 +24,9 @@ def extract_bl_awb(all_text):
 
     return result
 
-def extract_sarana_pengangkutan(all_text):
+def extract_sarana_pengangkutan_main(all_text):
     # 1) Kumpulkan baris antara "10. Nama Sarana Pengangkutan..." s/d poin berikutnya (mis. "11.")
+    
     lines = all_text.splitlines()
     start_idx = None
     for i, line in enumerate(lines):
@@ -162,6 +163,175 @@ def extract_sarana_pengangkutan(all_text):
 
     return result
 
+def extract_sarana_pengangkutan_subs(all_text):
+    # 1) Kumpulkan baris antara "10. Nama Sarana Pengangkutan..." s/d poin berikutnya (mis. "11.")
+    lines = all_text.splitlines()
+    start_idx = None
+    for i, line in enumerate(lines):
+        if line.strip().startswith("10. Nama Sarana Pengangkutan"):
+            start_idx = i
+            break
+
+    result = {
+        "kode_bendera": None,   # e.g. US, ID, PA
+        "negara": None,         # e.g. GERMANY, JAPAN, TAIWAN
+        "nama": None,           # e.g. FEDERAL EXPRESS CORPORATION, MY INDO AIRLINES, EVER BOOMY
+        "voyage_flight": None,  # e.g. FX5194, 2Y6011, 1147-082A, 3
+        "bendera": None,        # e.g. UNITED STATES, INDONESIA, PANAMA
+    }
+
+    if start_idx is None:
+        return result
+
+    # Ambil tail di baris label (mungkin berisi kode bendera, mis. "… Bendera PA")
+    label_line = lines[start_idx]
+    tail = re.sub(r"^10\.\s*Nama Sarana Pengangkutan\s*&\s*No\.\s*Voy/Flight\s*dan\s*Bendera\s*:?", "", label_line, flags=re.I).strip()
+
+    block = []
+    if tail:
+        block.append(tail)
+
+    # Himpun baris berikutnya sampai ketemu next point (mis. "11.", "12.", dst)
+    for j in range(start_idx + 1, len(lines)):
+        s = lines[j].strip()
+        if re.match(r"^\d{1,2}\.\s", s):  # berhenti saat heading poin berikutnya
+            break
+        block.append(s)
+
+    # Bersihkan: buang kosong & noise (contoh "PENJUAL SG/TW/DE")
+    cleaned = []
+    for s in block:
+        s2 = s.strip()
+        if not s2:
+            continue
+        if s2.upper().startswith("PENJUAL"):
+            continue
+        cleaned.append(s2)
+
+    if not cleaned:
+        return result
+
+    def take_country_code_from(text):
+        m = re.match(r"^([A-Z]{2,3})$", text.strip())
+        return m.group(1) if m else None
+
+    # Jika baris pertama cuma kode 2-3 huruf, ambil sebagai kode_bendera
+    if result["kode_bendera"] is None and cleaned:
+        code = take_country_code_from(cleaned[0])
+        if code:
+            result["kode_bendera"] = code
+            cleaned = cleaned[1:]
+
+    # Cadangan: jika tail di label memuat kode bendera nyelip (mis. “… Bendera US”)
+    if result["kode_bendera"] is None and tail:
+        m_tail = re.search(r"\b([A-Z]{2,3})\b$", tail)
+        if m_tail:
+            result["kode_bendera"] = m_tail.group(1)
+
+    # ---- Heuristik tambahan: cek pola 'angka saja' atau 'angka + negara' ----
+    flight_idx = None
+    for idx, s in enumerate(cleaned):
+        # pola: "3 PANAMA" atau "12 INDONESIA"
+        m_num_country = re.match(r"^(\d{1,4})\s+([A-Z][A-Z\s,]+)$", s)
+        if m_num_country:
+            result["voyage_flight"] = m_num_country.group(1).strip()
+            result["bendera"] = m_num_country.group(2).strip()
+            flight_idx = idx
+            break
+
+        # pola: baris hanya angka (contoh "3") — kemungkinan next line adalah negara/bendera
+        m_only_num = re.match(r"^(\d{1,4})\s*$", s)
+        if m_only_num:
+            result["voyage_flight"] = m_only_num.group(1).strip()
+            # jika ada baris berikutnya, ambil sebagai bendera bila cocok
+            if idx + 1 < len(cleaned):
+                cand = cleaned[idx + 1]
+                if re.match(r"^[A-Z][A-Z\s,]+$", cand):
+                    result["bendera"] = cand.strip()
+                    flight_idx = idx
+                    break
+            # jika tidak ada bendera di next line, kita tetap terima voyage
+            flight_idx = idx
+            break
+
+    # ---- Heuristik standar: flight + bendera (airline+angka, angka-dash, dll) ----
+    if result["voyage_flight"] is None:
+        for idx, s in enumerate(cleaned):
+            # pola 1: Airline code + angka (FX5194, 2Y6011)
+            m = re.match(r"^([A-Z]{1,3}\d{2,6})\s+([A-Z][A-Z\s,]+)$", s)
+            if not m:
+                # pola 2: numeric + dash/alfanumerik (1147-082A)
+                m = re.match(r"^(\d{1,6}(?:-[A-Z0-9]+)?)\s+([A-Z][A-Z\s,]+)$", s)
+            if not m:
+                # pola 3: kombinasi lain (ambil jika ada huruf+angka)
+                m = re.match(r"^([A-Z0-9]{2,8})\s+([A-Z][A-Z\s,]+)$", s)
+
+            if m:
+                # cegah menangkap baris yang jelas bukan flight (mis: '1 PACKAGE' atau '1 BULK' -> cek kata kedua bukan 'PACKAGE'/'BULK'/'FCL')
+                second_token = m.group(2).split()[0] if m.group(2) else ""
+                if second_token.upper() in ("PACKAGE", "BULK", "FCL", "KG", "PKG"):
+                    continue
+                result["voyage_flight"] = m.group(1).strip()
+                result["bendera"] = m.group(2).strip()
+                flight_idx = idx
+                break
+
+    # ---- Heuristik mapping negara & nama (berdasarkan posisi flight_idx) ----
+    if flight_idx is not None:
+        # nama biasanya baris sebelum flight
+        if flight_idx - 1 >= 0 and not result["nama"]:
+            candidate_name = cleaned[flight_idx - 1]
+            # Hindari memilih sesuatu yang terlihat seperti kode (2-3 huruf) atau angka
+            if not re.match(r"^[A-Z]{2,3}$", candidate_name) and not re.search(r"\d", candidate_name):
+                result["nama"] = candidate_name
+        # negara biasanya baris sebelum nama
+        if flight_idx - 2 >= 0 and not result["negara"]:
+            cand = cleaned[flight_idx - 2]
+            if re.match(r"^[A-Z][A-Z\s,\.()-]+$", cand) and not re.search(r"\d", cand):
+                result["negara"] = cand
+
+    # ---- Heuristik inline (satu baris flatten) jika masih kosong ----
+    if result["voyage_flight"] is None:
+        flat = " ".join(cleaned)
+        m = re.search(
+            r"\b([A-Z]{2,3})\s+([A-Z][A-Z\s,]+?)\s+([A-Z0-9\s\.\-&]+?)\s+([A-Z0-9]{1,4}\d{1,6}(?:-[A-Z0-9]+)?)\s+([A-Z][A-Z\s,]+)\b",
+            flat
+        )
+        if m:
+            if result["kode_bendera"] is None:
+                result["kode_bendera"] = m.group(1).strip()
+            if result["negara"] is None:
+                result["negara"] = m.group(2).strip()
+            if result["nama"] is None:
+                result["nama"] = m.group(3).strip()
+            result["voyage_flight"] = m.group(4).strip()
+            result["bendera"] = m.group(5).strip()
+
+    # ---- Fallback: jika negara/nama masih kosong, isi konservatif dari urutan awal ----
+    if result["negara"] is None or result["nama"] is None:
+        work = cleaned[:]
+        if flight_idx is not None and 0 <= flight_idx < len(work):
+            # jika flight line terdeteksi, hapus untuk deduksi nama/negara
+            try:
+                work.pop(flight_idx)
+            except Exception:
+                pass
+        # negara kandidat pertama yang uppercase-only (tanpa digit)
+        if result["negara"] is None:
+            for s in work:
+                if re.match(r"^[A-Z][A-Z\s,\.()-]+$", s) and not re.search(r"\d", s):
+                    result["negara"] = s
+                    break
+        # nama: baris uppercase yang bukan negara dan bukan kode 2-3 huruf
+        if result["nama"] is None:
+            for s in work:
+                if not re.search(r"\d", s) and not re.match(r"^[A-Z]{2,3}$", s):
+                    if result["negara"] and s == result["negara"]:
+                        continue
+                    result["nama"] = s
+                    break
+
+    return result
 
 def ambil_pelabuhan(match):
     if not match:
@@ -231,7 +401,12 @@ def extract_pib(pdf_path):
         "tujuan": ambil_pelabuhan(tujuan),
     }
 
-    data_extracted["sarana_pengangkutan"] = extract_sarana_pengangkutan(all_text)
+    sarana_main = extract_sarana_pengangkutan_main(all_text)
+
+    if sarana_main.get("voyage_flight") is None:
+        sarana_main = extract_sarana_pengangkutan_subs(all_text)
+
+    data_extracted["sarana_pengangkutan"] = sarana_main
 
     m = re.search(r"Nomor\s*:\s*([0-9]+)\s*Tanggal\s*:\s*([0-9-]+)", all_text)
     if m:
