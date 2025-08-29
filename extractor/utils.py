@@ -440,17 +440,19 @@ def extract_pib(pdf_path):
         kondisi = match.group(5).strip()
         negara = match.group(6).strip()
 
-        # Cari kode satuan
+        # --- Cari kode satuan ---
         start, end = match.span()
         context = all_text[end:end+200]
 
-        # cari di uraian dulu
-        satuan_match = re.search(r"\(([A-Z0-9\-]+)\)", uraian)
-        if not satuan_match:
-            # kalau tidak ketemu di uraian, coba di context
-            satuan_match = re.search(r"\(([A-Z0-9\-]+)\)", context)
-
-        kode_satuan = satuan_match.group(1).strip() if satuan_match else None
+        # 1️⃣ Prioritas: cek METRIC TON
+        if re.search(r"\bMETRIC\s+TON\b", uraian, re.I) or re.search(r"\bMETRIC\s+TON\b", context, re.I):
+            kode_satuan = "TNE"
+        else:
+            # 2️⃣ Kalau tidak ada, cek (XXX)
+            satuan_match = re.search(r"\(([A-Z0-9\-]+)\)", uraian)
+            if not satuan_match:
+                satuan_match = re.search(r"\(([A-Z0-9\-]+)\)", context)
+            kode_satuan = satuan_match.group(1).strip() if satuan_match else None
 
         barang_list.append({
             "uraian": uraian,
@@ -478,13 +480,16 @@ def extract_pib(pdf_path):
             start, end = match.span()
             context = all_text[end:end+200]
 
-            # cari di uraian dulu
-            satuan_match = re.search(r"\(([A-Z0-9\-]+)\)", uraian)
-            if not satuan_match:
-                # kalau tidak ketemu di uraian, coba di context
-                satuan_match = re.search(r"\(([A-Z0-9\-]+)\)", context)
+            # 1️⃣ Prioritas: cek METRIC TON
+            if re.search(r"\bMETRIC\s+TON\b", uraian, re.I) or re.search(r"\bMETRIC\s+TON\b", context, re.I):
+                kode_satuan = "TNE"
+            else:
+                # 2️⃣ Kalau tidak ada, cek (XXX)
+                satuan_match = re.search(r"\(([A-Z0-9\-]+)\)", uraian)
+                if not satuan_match:
+                    satuan_match = re.search(r"\(([A-Z0-9\-]+)\)", context)
+                kode_satuan = satuan_match.group(1).strip() if satuan_match else None
 
-            kode_satuan = satuan_match.group(1).strip() if satuan_match else None
 
             barang_list.append({
                 "uraian": uraian,
