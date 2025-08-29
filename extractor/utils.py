@@ -434,21 +434,26 @@ def extract_pib(pdf_path):
 
     for match in matches:
         hs_code = match.group(1).strip()
-        qty = float(match.group(2).replace(",", "").replace("-", ""))
-        nilai_pabean = float(match.group(3).replace(",", "").replace("-", ""))
+        jumlah_satuan = match.group(2).strip().replace(",", "").replace(".", ",").replace("-", "")
+        nilai_pabean = match.group(3).replace(",", "").replace("-", "")
         uraian = re.sub(r"\s+", " ", match.group(4).strip())
         kondisi = match.group(5).strip()
         negara = match.group(6).strip()
 
-        # --- Cari kode satuan ---
+        # Ambil qty (dari Berat Bersih jika ada)
+        qty_match = re.search(r"Berat Bersih\s*\(Kg\)\s*([\d\.,]+)", all_text)
+        if qty_match:
+            qty = qty_match.group(1).replace(",", "")
+        else:
+            qty = jumlah_satuan  # fallback
+
+        # Cari kode satuan
         start, end = match.span()
         context = all_text[end:end+200]
 
-        # 1️⃣ Prioritas: cek METRIC TON
         if re.search(r"\bMETRIC\s+TON\b", uraian, re.I) or re.search(r"\bMETRIC\s+TON\b", context, re.I):
             kode_satuan = "TNE"
         else:
-            # 2️⃣ Kalau tidak ada, cek (XXX)
             satuan_match = re.search(r"\(([A-Z0-9\-]+)\)", uraian)
             if not satuan_match:
                 satuan_match = re.search(r"\(([A-Z0-9\-]+)\)", context)
@@ -459,7 +464,8 @@ def extract_pib(pdf_path):
             "kondisi": kondisi,
             "negara": negara,
             "hs_code": hs_code,
-            "qty": qty,
+            "jumlah_satuan": jumlah_satuan, 
+            "qty": qty,                     
             "kode_satuan": kode_satuan,
             "nilai_pabean": nilai_pabean
         })
@@ -470,11 +476,18 @@ def extract_pib(pdf_path):
         matches = re.finditer(pattern_baru, all_text, re.S)
         for match in matches:
             hs_code = match.group(1).strip()
-            qty = float(match.group(2).replace(",", "").replace("-", ""))
-            nilai_pabean = float(match.group(3).replace(",", "").replace("-", ""))
+            jumlah_satuan = match.group(2).strip().replace(",", "").replace(".", ",").replace("-", "")
+            nilai_pabean = match.group(3).replace(",", "").replace("-", "")
             uraian = re.sub(r"\s+", " ", match.group(4).strip())
             kondisi = match.group(5).strip()
             negara = match.group(6).strip()
+
+            # Ambil qty (dari Berat Bersih jika ada)
+            qty_match = re.search(r"Berat Bersih\s*\(Kg\)\s*([\d\.,]+)", all_text)
+            if qty_match:
+                qty = qty_match.group(1).replace(",", "")
+            else:
+                qty = jumlah_satuan  # fallback
 
             # Cari kode satuan
             start, end = match.span()
@@ -496,6 +509,7 @@ def extract_pib(pdf_path):
                 "kondisi": kondisi,
                 "negara": negara,
                 "hs_code": hs_code,
+                "jumlah_satuan": jumlah_satuan, 
                 "qty": qty,
                 "kode_satuan": kode_satuan,
                 "nilai_pabean": nilai_pabean
